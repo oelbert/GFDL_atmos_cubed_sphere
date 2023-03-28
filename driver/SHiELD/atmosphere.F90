@@ -139,6 +139,11 @@ character(len=20)   :: mod_name = 'SHiELD/atmosphere_mod'
   integer, dimension(:), allocatable :: id_tracerdt_dyn
   integer :: sphum, liq_wat, rainwat, ice_wat, snowwat, graupel  !condensate species
 
+  !$ser verbatim integer :: o3mr, sgs_tke
+  !$ser verbatim character(len=256) :: ser_env, ser_input_only_str
+  !$ser verbatim logical :: serialize_only_driver_input, serialize_driver, serialize_dycore, serialize_physics, serialize_init, save_step, ser_input_only
+  !$ser verbatim integer, save :: driver_savepoints_saved = 0
+
   integer :: mygrid = 1
   integer :: p_split = 1
   integer, allocatable :: pelist(:)
