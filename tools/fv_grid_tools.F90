@@ -505,6 +505,9 @@ contains
     integer :: istart, iend, jstart, jend
     integer :: isection_s, isection_e, jsection_s, jsection_e
 
+    !$ser verbatim integer:: nxm1
+    !$ser verbatim nxm1=npx-1
+
     is  = Atm%bd%is
     ie  = Atm%bd%ie
     js  = Atm%bd%js
@@ -544,6 +547,7 @@ contains
         grid_global => Atm%grid_global
     else if( trim(grid_file) .NE. 'INPUT/grid_spec.nc') then
        allocate(grid_global(1-ng:npx  +ng,1-ng:npy  +ng,ndims,1:nregions))
+       !$ser verbatim grid_global(:,:,:,:) = 0.0
     endif
 
     iinta                         => Atm%gridstruct%iinta
@@ -631,7 +635,13 @@ contains
 
              else
 
-                if (Atm%flagstruct%grid_type>=0) call gnomonic_grids(Atm%flagstruct%grid_type, npx-1, xs, ys)
+                if (Atm%flagstruct%grid_type>=0) then
+                   !$ser savepoint GnomonicGrids-In
+                   !$ser data grid_type=Atm%flagstruct%grid_type nx=nxm1 lon=xs lat=ys
+                   call gnomonic_grids(Atm%flagstruct%grid_type, npx-1, xs, ys)
+                   !$ser savepoint GnomonicGrids-Out
+                   !$ser data lon=xs lat=ys
+                endif ! (Atm%flagstruct%grid_type>=0)
 
                 if (is_master()) then
 
@@ -643,7 +653,11 @@ contains
                    enddo
                    enddo
 ! mirror_grid assumes that the tile=1 is centered on equator and greenwich meridian Lon[-pi,pi]
+                   !$ser savepoint MirrorGrid-In
+                   !$ser data master_grid_global=grid_global master_ng=ng master_npx=npx master_npy=npy
                    call mirror_grid(grid_global, ng, npx, npy, 2, 6)
+                   !$ser savepoint MirrorGrid-Out
+                   !$ser data master_grid_global=grid_global
                    do n=1,nregions
                    do j=1,npy
                    do i=1,npx
