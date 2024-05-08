@@ -30,17 +30,18 @@ use hswf_mod,              only: Held_Suarez_Tend
 use fv_sg_mod,             only: fv_subgrid_z
 use fv_update_phys_mod,    only: fv_update_phys
 use fv_timing_mod,         only: timing_on, timing_off
-use monin_obukhov_mod,     only: mon_obkv
+use mon_obkv_mod,          only: mon_obkv
 use tracer_manager_mod,    only: get_tracer_index, adjust_mass
 use field_manager_mod,     only: MODEL_ATMOS
-use fms_mod,               only: error_mesg, FATAL, file_exist, open_namelist_file,  &
-                                 check_nml_error, mpp_pe, mpp_root_pe, close_file, &
-                                 write_version_number, stdlog, mpp_error
+use fms_mod,               only: error_mesg, FATAL,  &
+                                 check_nml_error, mpp_pe, mpp_root_pe, &
+                                 mpp_error
 use fv_mp_mod,             only: is_master, mp_reduce_max
 use fv_diagnostics_mod,    only: prt_maxmin, gn
 
 use fv_arrays_mod,          only: fv_grid_type, fv_flags_type, fv_nest_type, fv_grid_bounds_type, phys_diag_type, nudge_diag_type
 use mpp_domains_mod,       only: domain2d
+use mpp_mod,               only: input_nml_file
 use diag_manager_mod,      only: register_diag_field, register_static_field, send_data
 use qs_tables_mod,         only: qs_wat_init, qs_wat
 
@@ -100,11 +101,14 @@ public :: fv_phys, fv_nudge
   integer:: seconds, days
   logical :: print_diag
   integer :: istep = 0
+  logical :: do_zurita_HS = .false. !use form from Zurita-Gotor and Held 2022
+  real :: rd_zur = 1./25. !close to traditional H-S
 
   !GFDL Simplified Physics (mostly Frierson)
   logical:: diurnal_cycle    = .false.
   logical:: mixed_layer      = .false.
   logical:: gray_rad         = .false.
+  logical:: cloudy_rad       = .false.
   logical:: strat_rad        = .false.
   logical:: do_abl = .false.
   logical:: do_mon_obkv = .true.
@@ -131,6 +135,7 @@ public :: fv_phys, fv_nudge
   real:: abl_s_fac  =  0.1
   real:: ml_c0 = 6.285E7           ! Ocean heat capabicity 4190*depth*e3, depth = 15.
   real:: sw_abs = 0.            ! fraction of the solar absorbed/reflected by the atm
+  real :: fixed_sfc_htg = 0. !surface heating rate, K/s
 
 
   !Kessler parameters
@@ -159,12 +164,15 @@ namelist /sim_phys_nml/do_strat_HS_forcing, &
                        tau_temp, tau_press, sst_restore_timescale,  &
                        do_K_warm_rain, do_GFDL_sim_phys,&
                        do_reed_sim_phys, do_LS_cond, do_surf_drag,    &
-                       tau_surf_drag, do_terminator
+                       tau_surf_drag, do_terminator, do_zurita_HS, rd_zur
 
-namelist /GFDL_sim_phys_nml/ diurnal_cycle, mixed_layer, gray_rad, strat_rad, do_abl, do_mon_obkv, &
-     heating_rate, cooling_rate, uniform_sst, sst0, sst_type, shift_n, do_t_strat, p_strat, t_strat, tau_strat, &
-     mo_t_fac, tau_difz, prog_low_cloud, low_cf0, zero_winds, tau_zero, do_mo_fixed_cd, mo_cd, mo_u_mean, &
-     abl_s_fac, ml_c0, sw_abs
+namelist /GFDL_sim_phys_nml/ diurnal_cycle, mixed_layer, gray_rad, &
+     cloudy_rad, strat_rad, do_abl, do_mon_obkv, &
+     heating_rate, cooling_rate, uniform_sst, sst0, &
+     sst_type, shift_n, do_t_strat, p_strat, t_strat, tau_strat, &
+     mo_t_fac, tau_difz, prog_low_cloud, low_cf0, &
+     zero_winds, tau_zero, do_mo_fixed_cd, mo_cd, mo_u_mean, &
+     abl_s_fac, ml_c0, sw_abs, fixed_sfc_htg
 
 namelist /Kessler_sim_phys_nml/ K_sedi_transport, do_K_sedi_w, do_K_sedi_heat, K_cycle
 
@@ -451,12 +459,12 @@ contains
 
     if ( do_GFDL_sim_phys ) then
        moist_phys = .true.
-                                             call timing_on('GFDL_SIM_PHYS')
+       call timing_on('GFDL_SIM_PHYS')
        call GFDL_sim_phys(npx, npy, npz, is, ie, js, je, ng, nq, nwat, pk, pkz, &
                      u_dt, v_dt, t_dt, q_dt, u, v, w, ua, va, pt, delz, q, &
                      pe, delp, peln, ts, oro, hydrostatic, pdt, grid, ak, bk, & !ts --> sst
                      p_ref, Time, time_total, flagstruct%grid_type, gridstruct)
-                                            call timing_off('GFDL_SIM_PHYS')
+       call timing_off('GFDL_SIM_PHYS')
        no_tendency = .false.
     endif
 
@@ -540,7 +548,7 @@ contains
                               u, v, pt, q, pe, delp, peln, pkz, pdt,  &
                               ua, va, u_dt, v_dt, t_dt, q_dt, grid,   &
                               delz, phis, hydrostatic, ak, bk, ks,    &
-                              do_strat_HS_forcing, .false., master, Time, time_total)
+                              do_strat_HS_forcing, do_zurita_HS, rd_zur, master, Time, time_total)
        no_tendency = .false.
     elseif ( do_surf_drag ) then
 ! Bottom friction:
@@ -576,10 +584,10 @@ contains
 
 
     if (id_dudt > 0) then
-       used=send_data(id_dudt, u_dt(is:ie,js:je,npz), time)
+       used=send_data(id_dudt, u_dt(is:ie,js:je,:), time)
     endif
     if (id_dvdt > 0) then
-       used=send_data(id_dvdt, v_dt(is:ie,js:je,npz), time)
+       used=send_data(id_dvdt, v_dt(is:ie,js:je,:), time)
     endif
     if (id_dtdt > 0) then
        used=send_data(id_dtdt, t_dt(:,:,:), time)
@@ -590,7 +598,7 @@ contains
 
 
     if ( .not. no_tendency ) then
-                        call timing_on('UPDATE_PHYS')
+    call timing_on('FV_UPDATE_PHYS')
     call fv_update_phys (pdt, is, ie, js, je, isd, ied, jsd, jed, ng, nq,   &
                          u, v, w, delp, pt, q, qdiag, ua, va, ps, pe, peln, pk, pkz,  &
                          ak, bk, phis, u_srf, v_srf, ts,  &
@@ -600,7 +608,7 @@ contains
                          npx, npy, npz, flagstruct, neststruct, bd, domain, ptop, &
                          phys_diag, nudge_diag, q_dt=q_dt)
 
-                        call timing_off('UPDATE_PHYS')
+    call timing_off('FV_UPDATE_PHYS')
     endif
     deallocate ( u_dt )
     deallocate ( v_dt )
@@ -839,6 +847,36 @@ contains
          endif
     endif
 
+ elseif (cloudy_rad) then
+
+    do j=js,je
+       do k=1, km
+          do i=is,ie
+             den(i,k) = -delp(i,j,k)/(grav*dz(i,j,k))
+          enddo
+       enddo
+       call cloudy_radiation(is, ie, km, t3(is:ie,j,1:km), &
+                           q(is:ie,j,1:km,sphum), q(is:ie,j,1:km,liq_wat), &
+                           delp(is:ie,j,1:km), &
+                           dz(is:ie,j,1:km), den, t_dt_rad,              &
+                           olr(is,j), lwu(is,j), lwd(is,j), sw_surf(is,j))
+       do k=1, km
+          do i=is,ie
+             t_dt(i,j,k) = t_dt(i,j,k) + t_dt_rad(i,k)
+          enddo
+       enddo
+    enddo
+    if ( print_diag ) then
+       olrm = g0_sum(olr, is, ie, js, je, 0, gridstruct%area(is:ie,js:je), 1)
+       swab = g0_sum(sw_surf, is, ie, js, je, 0, gridstruct%area(is:ie,js:je), 1)
+
+
+       if( master ) then
+          write(*,*) 'Domain mean OLR', trim(gn), ' =', olrm
+          write(*,*) 'Domain mean SWA', trim(gn), ' =', swab
+       endif
+    endif
+
  else
 
 ! Prescribed (non-interating) heating/cooling rate:
@@ -909,12 +947,12 @@ if( do_mon_obkv ) then
        u_star(:,:) = 1.E-3
   endif
 
-                                                                             call timing_on('mon_obkv')
+  call timing_on('MON_OBKV')
   call mon_obkv(zvir, ps, t3(is:ie,js:je, km), zfull(is:ie,js:je,km),     &
                 rho, p3(is:ie,js:je,km), u3(is:ie,js:je,km), v3(is:ie,js:je,km), mo_u_mean, do_mo_fixed_cd, mo_cd,  sst,  &
                 qs, q3(is:ie,js:je,km,sphum), drag_t, drag_q, flux_t, flux_q, flux_u, flux_v, u_star, &
                 delm, pdt, mu, mo_t_fac, master)
-                                                                             call timing_off('mon_obkv')
+  call timing_off('MON_OBKV')
 !---------------------------------------------------
 ! delp/grav = delm = kg/m**2
 ! watts = J/s = N*m/s = kg * m**2 / s**3
@@ -929,9 +967,14 @@ if( do_mon_obkv ) then
                rate_v = flux_v(i,j)/delm(i,j)
            v3(i,j,km) =   v3(i,j,km) + pdt*rate_v
          v_dt(i,j,km) = v_dt(i,j,km) + rate_v
+         if (abs(fixed_sfc_htg) > 1.e-8) then
+            rate_t = fixed_sfc_htg
+            flux_t(i,j) = rate_t*cp_air*delm(i,j)
+         else
                rate_t = flux_t(i,j)/(cp_air*delm(i,j))
+         endif
          t_dt(i,j,km) = t_dt(i,j,km) + rate_t
-           t3(i,j,km) =   t3(i,j,km) + rate_t*pdt
+            t3(i,j,km) =   t3(i,j,km) + rate_t*pdt
                rate_q = flux_q(i,j)/delm(i,j)
          q_dt(i,j,km,sphum) = q_dt(i,j,km,sphum) + rate_q
            q3(i,j,km,sphum) =   q3(i,j,km,sphum) + rate_q*pdt
@@ -1028,7 +1071,7 @@ endif
         enddo
      enddo
 
-   if ( gray_rad ) then
+   if ( gray_rad .or. cloudy_rad) then
      do j=js, je
         do i=is, ie
            sst(i,j) = sst(i,j)+pdt*(sw_surf(i,j) + lwd(i,j) - rflux(i,j)  &
@@ -1147,6 +1190,12 @@ endif
           endif
        enddo
 125 continue
+
+!!! DEBUG CODE
+       if (is_master()) then
+          print*, 'ABL: pblh = ', sum(pblh)/((ie-is+1)*(je-js+1))
+       endif
+!!! END DEBUG CODE
 
   do k=km, 1, -1
      do i=is, ie
@@ -1543,7 +1592,109 @@ endif
 
  end subroutine gray_radiation
 
+ !From Stevens et al. 2005, MWR
+ subroutine cloudy_radiation(is, ie, km, pt, qv, ql, &
+                             delp, delz, rho, t_dt, olr, lwu, lwd, sw_surf)
 
+   integer, intent(in):: is, ie, km
+   real, intent(in), dimension(is:ie,km):: pt, delp, delz, rho, qv, ql
+   real, intent(out), dimension(is:ie,km):: t_dt
+   real, intent(out), dimension(is:ie):: olr, lwu, lwd, sw_surf
+   !local:
+   real, dimension(is:ie) :: lwp, Qup
+   real, dimension(is:ie,km+1) :: Frad
+   real :: qz, tmp, zi, zint, densT, densB, cube, df
+   integer :: i,j,k,ki
+
+   real, parameter :: F_0 = 70.
+   real, parameter :: F_1 = 22.
+   real, parameter :: kappa = 85.
+   real, parameter :: az = 1.
+   real, parameter :: Divg = 3.75e-6
+   real, parameter :: c13 = 1./3.
+   real, parameter :: c43 = 4.*c13
+
+   !Compute column cloud water
+
+   do i=is,ie
+      lwp(i) = 0.0
+   enddo
+   do k=1,km
+      do i=is,ie
+         lwp(i) = lwp(i) + delp(i,k)*ql(i,k)
+      enddo
+   enddo
+
+   !Compute water above and flux terms
+   do i=is,ie
+      Qup(i) = 0.0
+      Frad(i,1) = F_0 + F_1*exp(-kappa*lwp(i))
+   enddo
+   do k=1,km
+      do i=is,ie
+         Qup(i) = Qup(i) + delp(i,k)*ql(i,k)
+         qz = lwp(i) - Qup(i)
+         tmp = F_0*exp(-kappa*Qup(i))
+         Frad(i,k+1) = tmp + F_1*exp(-kappa*qz)
+      enddo
+   enddo
+
+   do i=is,ie
+      sw_surf(i) = Frad(i,km+1)
+      lwu(i) = F_1
+   enddo
+
+   !Compute cloud top and free tropospheric cooling
+   do i=is,ie
+      ki = 1
+      do while (ki <= km .and. qv(i,ki)+ql(i,ki) < 0.008 )
+         ki = ki+1
+      enddo
+      if (ki > km) continue
+
+      zi = 0.0
+      do k=km,ki+1,-1
+         zi = zi - delz(i,k)
+      enddo
+      zi = zi - 0.5*delz(i,ki)
+
+      zint = 0.0
+      !densT = -delp(i,k)/(grav*delz(i,k))*rdgas*pt(i,k)*(1.+zvir*qv(i,k))
+      densT=rho(i,k)
+
+      cube = -exp(c13*log(abs(zi)))
+      tmp = 0.25*cube**4
+      tmp = tmp + zi*cube
+      tmp = tmp*densT*cp_air*divg*az
+      lwd(i) = tmp
+      Frad(i,km+1) = Frad(i,km+1) + tmp
+
+      do k=km,1,-1
+         zint = zint - delz(i,k)
+         df = zint-zi
+         cube = sign(exp(c13*log(abs(df))), df)
+         tmp = 0.25*cube**4
+         tmp = tmp + zi*cube
+         densB = densT
+         densT = rho(i,k) ! -delp(i,k)/(grav*delz(i,k))*rdgas*pt(i,k)*(1.+zvir*qv(i,k))
+         tmp = tmp*0.5*(densB+densT)*cp_air*Divg*az
+         Frad(i,k) = Frad(i,k) + tmp
+      enddo
+   enddo
+
+   !Compute outputs
+
+   do i=is,ie
+      olr(i) = Frad(i,1)
+   enddo
+   do k=1,km
+      do i=is,ie
+         t_dt(i,k) = (Frad(i,k) - Frad(i,k+1))/(cp_air*rho(i,k)*delz(i,k))
+      enddo
+   enddo
+
+
+ end subroutine cloudy_radiation
 
  subroutine get_low_clouds( is,ie, js,je, km, ql, qi, qa, clouds )
  integer, intent(in):: is,ie, js,je, km
@@ -1580,27 +1731,22 @@ endif
     master = is_master()
 
 !   ----- read and write namelist -----
-    if ( file_exist('input.nml')) then
-         unit = open_namelist_file ('input.nml')
-         read  (unit, nml=sim_phys_nml, iostat=io, end=10)
-         ierr = check_nml_error(io,'sim_phys_nml')
+    read  (input_nml_file, nml=sim_phys_nml, iostat=io)
+     ierr = check_nml_error(io,'sim_phys_nml')
 
-         if (do_K_warm_rain) then
-            read  (unit, nml=Kessler_sim_phys_nml, iostat=io, end=10)
-            ierr = check_nml_error(io,'Kessler_sim_phys_nml')
-         endif
+    if (do_K_warm_rain) then
+       read  (input_nml_file, nml=Kessler_sim_phys_nml, iostat=io)
+       ierr = check_nml_error(io,'Kessler_sim_phys_nml')
+    endif
 
-         if (do_GFDL_sim_phys) then
-            read  (unit, nml=GFDL_sim_phys_nml, iostat=io, end=10)
-            ierr = check_nml_error(io,'GFDL_sim_phys_nml')
-         endif
+    if (do_GFDL_sim_phys) then
+       read  (input_nml_file, nml=GFDL_sim_phys_nml, iostat=io)
+       ierr = check_nml_error(io,'GFDL_sim_phys_nml')
+    endif
 
-         if (do_reed_sim_phys) then
-            read  (unit, nml=reed_sim_phys_nml, iostat=io, end=10)
-            ierr = check_nml_error(io,'reed_sim_phys_nml')
-         endif
-
- 10     call close_file (unit)
+    if (do_reed_sim_phys) then
+       read  (input_nml_file, nml=reed_sim_phys_nml, iostat=io)
+       ierr = check_nml_error(io,'reed_sim_phys_nml')
     endif
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
