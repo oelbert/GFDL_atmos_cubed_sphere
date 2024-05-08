@@ -41,13 +41,12 @@ module fv_ada_nudge_mod
  use fms_mod,           only: write_version_number, check_nml_error
  use mpp_mod,           only: mpp_error, FATAL, stdlog, get_unit, mpp_pe, input_nml_file
  use mpp_mod,           only: mpp_root_pe, stdout ! snz
- use mpp_mod,           only: mpp_clock_id, mpp_clock_begin, mpp_clock_end
  use mpp_mod,           only: CLOCK_COMPONENT, CLOCK_SUBCOMPONENT, CLOCK_MODULE, CLOCK_ROUTINE
  use mpp_domains_mod,   only: mpp_update_domains, domain2d
  use mpp_domains_mod,   only: mpp_get_data_domain ! snz
  use time_manager_mod,  only: time_type,  get_time, get_date, set_date, increment_time
 
- use grid_mod, only : define_cube_mosaic ! snz
+ use grid2_mod, only : define_cube_mosaic ! snz
 
  use fv_grid_utils_mod, only: great_circle_dist, intp_great_circle
  use fv_grid_utils_mod, only: latlon2xyz, vect_cross, normalize_vect
@@ -63,9 +62,9 @@ module fv_ada_nudge_mod
 
  use fms2_io_mod,       only : register_restart_field, open_file, close_file, &
                                read_restart, register_field, &
-                               register_variable_attribute, file_exists, FmsNetcdfFile_t
+                               register_variable_attribute, file_exists, FmsNetcdfDomainFile_t
  use fv_io_mod,         only : fv_io_register_axis
- use axis_utils_mod, only : frac_index
+ use axis_utils2_mod, only : frac_index
 
 #ifdef ENABLE_ADA
  use ada_types_mod, only : model_data_type
@@ -233,9 +232,8 @@ module fv_ada_nudge_mod
   integer :: id_u_adj, id_v_adj, id_t_adj, id_q_adj, id_ps_adj ! snz
   integer :: id_u_a, id_v_a, id_t_a, id_q_a, id_ps_a ! snz
   integer :: id_u_da, id_v_da, id_t_da, id_q_da, id_ps_da ! snz
-  integer :: id_ada
 
-  type(FmsNetcdfFile_t) :: ada_driver_restart ! snz
+  type(FmsNetcdfDomainFile_t) :: ada_driver_restart ! snz
   character(len=*), parameter :: restart_file="INPUT/ada_driver.res.nc" ! snz
   character(len=8), dimension(4) :: dim_names_4d
 
@@ -439,7 +437,6 @@ module fv_ada_nudge_mod
 ! *t_obs* is virtual temperature
 #ifdef ENABLE_ADA ! snz
 
- call mpp_clock_begin(id_ada)
 !  call get_time (time, seconds, days)
 
   if (mod(seconds, 21600) == 0) then
@@ -662,7 +659,6 @@ module fv_ada_nudge_mod
     call mpp_update_domains(pt(:,:,:), domain, complete=.true.)
   end if
 
-  call mpp_clock_end(id_ada)
 
 #endif ! snz
 
@@ -3801,9 +3797,9 @@ endif
          enddo
       enddo
    enddo
-                     call timing_on('COMM_TOTAL')
+   call timing_on('COMM_TOTAL')
    call mpp_update_domains(q, domain, complete=.true.)
-                     call timing_off('COMM_TOTAL')
+   call timing_off('COMM_TOTAL')
 
    do n=1,ntimes
 

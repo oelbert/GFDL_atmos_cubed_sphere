@@ -468,10 +468,8 @@ contains
          u_dt(i,j,k) = rdt*(u0(i,k) - ua(i,j,k))
          v_dt(i,j,k) = rdt*(v0(i,k) - va(i,j,k))
            ta(i,j,k) = t0(i,k)   ! *** temperature updated ***
-#ifdef GFS_PHYS
            ua(i,j,k) = u0(i,k)
            va(i,j,k) = v0(i,k)
-#endif
       enddo
       do iq=1,nq
          do i=is,ie
@@ -530,6 +528,7 @@ contains
       real, parameter:: ustar2 = 1.E-4
       real:: cv_air, xvir
       integer :: sphum, liq_wat, rainwat, snowwat, graupel, ice_wat, cld_amt
+      logical:: sat_adj = .false.
 
       cv_air = cp_air - rdgas ! = rdgas * (7/2-1) = 2.5*rdgas=717.68
         rk = cp_air/rdgas + 1.
@@ -572,7 +571,7 @@ contains
 !$OMP parallel do default(none) shared(im,is,ie,js,je,nq,kbot,qa,ta,sphum,ua,va,delp,peln,     &
 !$OMP                                  hydrostatic,pe,delz,g2,w,liq_wat,rainwat,ice_wat,  &
 !$OMP                                  snowwat,cv_air,m,graupel,pkz,rk,rz,fra,cld_amt,    &
-!$OMP                                  u_dt,rdt,v_dt,xvir,nwat)                 &
+!$OMP                                  u_dt,rdt,v_dt,xvir,nwat,sat_adj)                 &
 !$OMP                          private(kk,lcp2,icp2,tcp3,dh,dq,den,qs,qsw,dqsdt,qcon,q0, &
 !$OMP                                  t0,u0,v0,w0,h0,pm,gzh,tvm,tmp,cpm,cvm, q_liq,q_sol,&
 !$OMP                                  tv,gz,hd,te,ratio,pt1,pt2,tv1,tv2,ri_ref, ri,mc,km1)
@@ -878,18 +877,14 @@ contains
 !----------------------
 ! Saturation adjustment
 !----------------------
-#ifndef GFS_PHYS
-  if ( nwat > 5 ) then
+  if ( nwat > 5 .and. sat_adj) then
     do k=1, kbot
       if ( hydrostatic ) then
         do i=is, ie
 ! Compute pressure hydrostatically
            den(i,k) = pm(i,k)/(rdgas*t0(i,k)*(1.+xvir*q0(i,k,sphum)))
-           q_liq = q0(i,k,liq_wat) + q0(i,k,rainwat)
-           q_sol = q0(i,k,ice_wat) + q0(i,k,snowwat) + q0(i,k,graupel)
-           cpm(i) = (1.-(q0(i,k,sphum)+q_liq+q_sol))*cp_air + q0(i,k,sphum)*cp_vapor + q_liq*c_liq + q_sol*c_ice
-           lcp2(i) = hlv / cpm(i)
-           icp2(i) = hlf / cpm(i)
+           lcp2(i) = hlv / cp_air
+           icp2(i) = hlf / cp_air
         enddo
       else
         do i=is, ie
@@ -928,17 +923,12 @@ contains
        enddo
     enddo
   endif
-#endif
 
    do k=1,kbot
       do i=is,ie
          u_dt(i,j,k) = rdt*(u0(i,k) - ua(i,j,k))
          v_dt(i,j,k) = rdt*(v0(i,k) - va(i,j,k))
            ta(i,j,k) = t0(i,k)   ! *** temperature updated ***
-#ifdef GFS_PHYS
-           ua(i,j,k) = u0(i,k)
-           va(i,j,k) = v0(i,k)
-#endif
       enddo
       do iq=1,nq
          if (iq .ne. cld_amt ) then
@@ -1028,11 +1018,8 @@ real, dimension(is:ie,js:je):: pt2, qv2, ql2, qi2, qs2, qr2, qg2, dp2, p2, icpk,
        do j=js, je
           do i=is, ie
              p2(i,j) = dp2(i,j)/(peln(i,k+1,j)-peln(i,k,j))
-             q_liq = max(0., ql2(i,j) + qr2(i,j))
-             q_sol = max(0., qi2(i,j) + qs2(i,j))
-             cpm = (1.-(qv2(i,j)+q_liq+q_sol))*cp_air + qv2(i,j)*cp_vapor + q_liq*c_liq + q_sol*c_ice
-             lcpk(i,j) = hlv / cpm
-             icpk(i,j) = hlf / cpm
+             lcpk(i,j) = hlv / cp_air
+             icpk(i,j) = hlf / cp_air
           enddo
        enddo
      else

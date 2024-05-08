@@ -24,10 +24,11 @@ module nh_utils_mod
 ! To do list:
 ! include moisture effect in pt
 !------------------------------
-   use constants_mod,     only: rdgas, cp_air, grav
+   use constants_mod,     only: rdgas, cp_air, grav, pi_8
    use tp_core_mod,       only: fv_tp_2d
    use sw_core_mod,       only: fill_4corners, del6_vt_flux
    use fv_arrays_mod,     only: fv_grid_bounds_type, fv_grid_type, fv_nest_BC_type_3d
+   use mpp_mod,           only: mpp_pe
 
    implicit none
    private
@@ -35,7 +36,8 @@ module nh_utils_mod
    public update_dz_c, update_dz_d, nh_bc
    public sim_solver, sim1_solver, sim3_solver
    public sim3p0_solver, rim_2d
-   public Riem_Solver_c, edge_scalar
+   public Riem_Solver_c, edge_scalar, imp_diff_w
+   public edge_profile1
 
 #ifdef DZ_MIN_6
    real, parameter:: dz_min = 6.
@@ -43,6 +45,10 @@ module nh_utils_mod
    real, parameter:: dz_min = 2.
 #endif
    real, parameter:: r3 = 1./3.
+
+   real, allocatable :: rff(:)
+   logical :: RFw_initialized = .false.
+   integer :: k_rf = 0
 
 CONTAINS
 
@@ -312,16 +318,18 @@ CONTAINS
 
   subroutine Riem_Solver_c(ms,   dt,  is,   ie,   js, je, km,   ng,  &
                            akap, cappa, cp,  ptop, hs, w3,  pt, q_con, &
-                           delp, gz,  pef,  ws, p_fac, a_imp, scale_m)
+                           delp, gz,  pef,  ws, p_fac, a_imp, scale_m, &
+                           pfull, fast_tau_w_sec, rf_cutoff)
 
    integer, intent(in):: is, ie, js, je, ng, km
    integer, intent(in):: ms
-   real, intent(in):: dt,  akap, cp, ptop, p_fac, a_imp, scale_m
+   real, intent(in):: dt,  akap, cp, ptop, p_fac, a_imp, scale_m, fast_tau_w_sec, rf_cutoff
    real, intent(in):: ws(is-ng:ie+ng,js-ng:je+ng)
    real, intent(in), dimension(is-ng:ie+ng,js-ng:je+ng,km):: pt, delp
    real, intent(in), dimension(is-ng:,js-ng:,1:):: q_con, cappa
    real, intent(in)::   hs(is-ng:ie+ng,js-ng:je+ng)
    real, intent(in), dimension(is-ng:ie+ng,js-ng:je+ng,km):: w3
+   real, intent(in) :: pfull(km)
 ! OUTPUT PARAMETERS
    real, intent(inout), dimension(is-ng:ie+ng,js-ng:je+ng,km+1):: gz
    real, intent(  out), dimension(is-ng:ie+ng,js-ng:je+ng,km+1):: pef
@@ -329,6 +337,7 @@ CONTAINS
   real, dimension(is-1:ie+1,km  ):: dm, dz2, w2, pm2, gm2, cp2
   real, dimension(is-1:ie+1,km+1):: pem, pe2, peg
   real gama, rgrav
+  real(kind=8) :: rff_temp
   integer i, j, k
   integer is1, ie1
 
@@ -338,8 +347,22 @@ CONTAINS
    is1 = is - 1
    ie1 = ie + 1
 
+   !Set up rayleigh damping
+   if (fast_tau_w_sec > 1.e-5 .and. .not. RFw_initialized) then
+      allocate(rff(km))
+      RFw_initialized = .true.
+      do k=1,km
+         if (pfull(k) > rf_cutoff) exit
+         k_rf = k
+         rff_temp = real(dt/fast_tau_w_sec,kind=8) &
+                  * sin(0.5d0*pi_8*log(real(rf_cutoff/pfull(k),kind=8))/log(real(rf_cutoff/ptop, kind=8)))**2
+         rff(k) = 1.0d0 / ( 1.0d0+rff_temp )
+      enddo
+   endif
+
+
 !$OMP parallel do default(none) shared(js,je,is1,ie1,km,delp,pef,ptop,gz,rgrav,w3,pt, &
-!$OMP                                  a_imp,dt,gama,akap,ws,p_fac,scale_m,ms,hs,q_con,cappa) &
+!$OMP                                  a_imp,dt,gama,akap,ws,p_fac,scale_m,ms,hs,q_con,cappa,fast_tau_w_sec) &
 !$OMP                          private(cp2,gm2, dm, dz2, w2, pm2, pe2, pem, peg)
    do 2000 j=js-1, je+1
 
@@ -395,7 +418,7 @@ CONTAINS
                        dm, pm2, w2, dz2, pt(is1:ie1,j,1:km), ws(is1,j), .true.)
       else
            call SIM1_solver(dt, is1, ie1, km, rdgas, gama, gm2, cp2, akap, pe2,  &
-                            dm, pm2, pem, w2, dz2, pt(is1:ie1,j,1:km), ws(is1,j), p_fac)
+                            dm, pm2, pem, w2, dz2, pt(is1:ie1,j,1:km), ws(is1,j), p_fac, fast_tau_w_sec)
       endif
 
       do k=2,km+1
@@ -529,11 +552,11 @@ CONTAINS
                        dm, pm2, w2, dz2, pt(is:ie,j,1:km), ws(is,j), .false.)
       elseif ( a_imp > 0.999 ) then
            call SIM1_solver(dt, is, ie, km, rdgas, gama, gm2, cp2, akap, pe2, dm,   &
-                            pm2, pem, w2, dz2, pt(is:ie,j,1:km), ws(is,j), p_fac)
+                            pm2, pem, w2, dz2, pt(is:ie,j,1:km), ws(is,j), p_fac, -1.)
       else
            call SIM_solver(dt, is, ie, km, rdgas, gama, gm2, cp2, akap, pe2, dm,  &
                            pm2, pem, w2, dz2, pt(is:ie,j,1:km), ws(is,j), &
-                           a_imp, p_fac, scale_m)
+                           a_imp, p_fac, scale_m, -1.)
       endif
 
       do k=1, km
@@ -589,13 +612,12 @@ CONTAINS
   end subroutine Riem_Solver3test
 
 
-  subroutine imp_diff_w(j, is, ie, js, je, ng, km, cd, delz, ws, w, w3)
-  integer, intent(in) :: j, is, ie, js, je, km, ng
+  subroutine imp_diff_w(is, ie, km, cd, delz, ws, w)
+  integer, intent(in) :: is, ie, km
   real, intent(in) :: cd
   real, intent(in) :: delz(is:ie, km)  ! delta-height (m)
-  real, intent(in) :: w(is:ie, km)  ! vertical vel. (m/s)
+  real, intent(inout) :: w(is:ie, km)  ! vertical vel. (m/s)
   real, intent(in) :: ws(is:ie)
-  real, intent(out) :: w3(is-ng:ie+ng,js-ng:je+ng,km)
 ! Local:
   real, dimension(is:ie,km):: c, gam, dz, wt
   real:: bet(is:ie)
@@ -633,22 +655,23 @@ CONTAINS
      do i=is,ie
         gam(i,km) = c(i,km-1) / bet(i)
                 a = cd/(dz(i,km)*delz(i,km))
-         wt(i,km) = (w(i,km) + 2.*ws(i)*cd/delz(i,km)**2                        &
+         w(i,km) = (w(i,km) + 2.*ws(i)*cd/delz(i,km)**2                        &
                   +  a*wt(i,km-1))/(1. + a + (cd+cd)/delz(i,km)**2 + a*gam(i,km))
      enddo
 
      do k=km-1,1,-1
         do i=is,ie
-           wt(i,k) = wt(i,k) - gam(i,k+1)*wt(i,k+1)
+           w(i,k) = wt(i,k) - gam(i,k+1)*w(i,k+1)
         enddo
      enddo
 
-     do k=1,km
-        do i=is,ie
-           w3(i,j,k) = wt(i,k)
-        enddo
-     enddo
-
+!!$
+!!$     do k=1,km
+!!$        do i=is,ie
+!!$           w3(i,j,k) = wt(i,k)
+!!$        enddo
+!!$     enddo
+!!$
   end subroutine imp_diff_w
 
 
@@ -1191,9 +1214,9 @@ CONTAINS
 
 
  subroutine SIM1_solver(dt,  is,  ie, km, rgas, gama, gm2, cp2, kappa, pe, dm2,   &
-                        pm2, pem, w2, dz2, pt2, ws, p_fac)
+                        pm2, pem, w2, dz2, pt2, ws, p_fac, fast_tau_w_sec)
    integer, intent(in):: is, ie, km
-   real,    intent(in):: dt, rgas, gama, kappa, p_fac
+   real,    intent(in):: dt, rgas, gama, kappa, p_fac, fast_tau_w_sec
    real, intent(in), dimension(is:ie,km):: dm2, pt2, pm2, gm2, cp2
    real, intent(in )::  ws(is:ie)
    real, intent(in ), dimension(is:ie,km+1):: pem
@@ -1259,9 +1282,9 @@ CONTAINS
     do k=2, km
        do i=is, ie
 #ifdef MOIST_CAPPA
-          aa(i,k) = t1g*0.5*(gm2(i,k-1)+gm2(i,k))/(dz2(i,k-1)+dz2(i,k)) * (pem(i,k)+pp(i,k))
+          aa(i,k) = t1g*0.5*(gm2(i,k-1)+gm2(i,k))/(dz2(i,k-1)+dz2(i,k)) * (pem(i,k))
 #else
-          aa(i,k) = t1g/(dz2(i,k-1)+dz2(i,k)) * (pem(i,k)+pp(i,k))
+          aa(i,k) = t1g/(dz2(i,k-1)+dz2(i,k)) * (pem(i,k))
 #endif
        enddo
     enddo
@@ -1278,9 +1301,9 @@ CONTAINS
     enddo
     do i=is, ie
 #ifdef MOIST_CAPPA
-           p1(i) = t1g*gm2(i,km)/dz2(i,km)*(pem(i,km+1)+pp(i,km+1))
+       p1(i) = t1g*gm2(i,km)/dz2(i,km)*(pem(i,km+1))
 #else
-           p1(i) = t1g/dz2(i,km)*(pem(i,km+1)+pp(i,km+1))
+       p1(i) = t1g/dz2(i,km)*(pem(i,km+1))
 #endif
        gam(i,km) = aa(i,km) / bet(i)
           bet(i) =  dm2(i,km) - (aa(i,km)+p1(i) + aa(i,km)*gam(i,km))
@@ -1291,6 +1314,16 @@ CONTAINS
           w2(i,k) = w2(i,k) - gam(i,k+1)*w2(i,k+1)
        enddo
     enddo
+
+!!! Try Rayleigh damping of w
+    if (fast_tau_w_sec > 1.e-5) then
+       !currently not damping to heat
+       do k=1,k_rf
+          do i=is,ie
+             w2(i,k) = w2(i,k)*rff(k)
+          enddo
+       enddo
+    endif
 
     do i=is, ie
        pe(i,1) = 0.
@@ -1321,12 +1354,12 @@ CONTAINS
        enddo
     enddo
 
- end subroutine SIM1_solver
+  end subroutine SIM1_solver
 
  subroutine SIM_solver(dt,  is,  ie, km, rgas, gama, gm2, cp2, kappa, pe2, dm2,   &
-                       pm2, pem, w2, dz2, pt2, ws, alpha, p_fac, scale_m)
+                       pm2, pem, w2, dz2, pt2, ws, alpha, p_fac, scale_m, fast_tau_w_sec)
    integer, intent(in):: is, ie, km
-   real, intent(in):: dt, rgas, gama, kappa, p_fac, alpha, scale_m
+   real, intent(in):: dt, rgas, gama, kappa, p_fac, alpha, scale_m, fast_tau_w_sec
    real, intent(in), dimension(is:ie,km):: dm2, pt2, pm2, gm2, cp2
    real, intent(in )::  ws(is:ie)
    real, intent(in ), dimension(is:ie,km+1):: pem
@@ -1394,8 +1427,7 @@ CONTAINS
 
     do k=1, km+1
        do i=is, ie
-! pe2 is Full p
-          pe2(i,k) = pem(i,k) + pp(i,k)
+          pe2(i,k) = pem(i,k)
        enddo
     enddo
 
@@ -1441,6 +1473,16 @@ CONTAINS
          w2(i,k) = w2(i,k) - gam(i,k+1)*w2(i,k+1)
       enddo
     enddo
+
+!!! Try Rayleigh damping of w
+    if (fast_tau_w_sec > 1.e-5) then
+       !currently not damping to heat
+       do k=1,k_rf
+          do i=is,ie
+             w2(i,k) = w2(i,k)*rff(k)
+          enddo
+       enddo
+    endif
 
     do i=is, ie
        pe2(i,1) = 0.
@@ -1639,6 +1681,72 @@ CONTAINS
     enddo
 
  end subroutine edge_profile
+
+  subroutine edge_profile1(q1, q1e, i1, i2, km, dp0, limiter)
+! Edge profiles for a single scalar quantity
+ integer, intent(in):: i1, i2
+ integer, intent(in):: km
+ integer, intent(in):: limiter
+ real, intent(in):: dp0(km)
+ real, intent(in),  dimension(i1:i2,km):: q1
+ real, intent(out), dimension(i1:i2,km+1):: q1e
+!-----------------------------------------------------------------------
+ real, dimension(i1:i2,km+1):: qe1, gam  ! edge values
+ real  gak(km)
+ real  bet, r2o3, r4o3
+ real  g0, gk, xt1, xt2, a_bot
+ integer i, k
+
+! Assuming grid varying in vertical only
+   g0 = dp0(2) / dp0(1)
+  xt1 = 2.*g0*(g0+1. )
+  bet =    g0*(g0+0.5)
+  do i=i1,i2
+      qe1(i,1) = ( xt1*q1(i,1) + q1(i,2) ) / bet
+      gam(i,1) = ( 1. + g0*(g0+1.5) ) / bet
+  enddo
+
+  do k=2,km
+     gk = dp0(k-1) / dp0(k)
+     do i=i1,i2
+             bet =  2. + 2.*gk - gam(i,k-1)
+        qe1(i,k) = ( 3.*(q1(i,k-1)+gk*q1(i,k)) - qe1(i,k-1) ) / bet
+        gam(i,k) = gk / bet
+     enddo
+  enddo
+
+  a_bot = 1. + gk*(gk+1.5)
+    xt1 =   2.*gk*(gk+1.)
+  do i=i1,i2
+             xt2 = gk*(gk+0.5) - a_bot*gam(i,km)
+     qe1(i,km+1) = ( xt1*q1(i,km) + q1(i,km-1) - a_bot*qe1(i,km) ) / xt2
+  enddo
+
+  do k=km,1,-1
+     do i=i1,i2
+        qe1(i,k) = qe1(i,k) - gam(i,k)*qe1(i,k+1)
+     enddo
+  enddo
+
+!------------------
+! Apply constraints
+!------------------
+    if ( limiter/=0 ) then   ! limit the top & bottom winds
+         do i=i1,i2
+! Top
+            if ( q1(i,1)*qe1(i,1) < 0. ) qe1(i,1) = 0.
+! Surface:
+            if ( q1(i,km)*qe1(i,km+1) < 0. ) qe1(i,km+1) = 0.
+         enddo
+    endif
+
+    do k=1,km+1
+       do i=i1,i2
+          q1e(i,k) = qe1(i,k)
+       enddo
+    enddo
+
+  end subroutine edge_profile1
 
  subroutine nh_bc(ptop, grav, kappa, cp, delp, delzBC, pt, phis, &
 #ifdef USE_COND
