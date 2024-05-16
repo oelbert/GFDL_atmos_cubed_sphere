@@ -645,7 +645,7 @@ module fv_arrays_mod
    logical :: nudge_dz = .false.    !< During the adiabatic initialization (na_init > 0), if set
                                     !< to .true., delz is nudged back to the value specified in the initial
                                     !< conditions, instead of nudging the temperature back to the initial value.
-                                    !< Nudging delz is simpler (faster), doesn’t require consideration of the
+                                    !< Nudging delz is simpler (faster), doesn't require consideration of the
                                     !< virtual temperature effect, and may be more stable. .false.by default.
    real    :: p_ref = 1.E5   !< Surface pressure used to construct a horizontally-uniform reference
                              !< vertical pressure profile, used in some simple physics packages
