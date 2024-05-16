@@ -238,7 +238,7 @@ module fv_arrays_mod
                              !< monotonicity constraint of Huynh, which is less diffusive
                              !< but more expensive than other monotonic constraints. For hydrostatic simulation, 8
                              !< (the L04 monotonicity constraint) or 10 are recommended; for
-                             !< nonhydrostatic simulation, the completely unlimited (“linear”
+                             !< nonhydrostatic simulation, the completely unlimited ("linear"
                              !< or non-monotone) PPM scheme is recommended. If no monotonicity
                              !< constraint is applied, enabling the flux damping
                              !< (do_vort_damp = .true.) is highly recommended to control grid-scale
