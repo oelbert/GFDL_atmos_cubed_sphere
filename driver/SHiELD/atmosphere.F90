@@ -547,7 +547,9 @@ contains
     endif
 
     end do !p_split
-
+    !$ser savepoint CalcLocalOmga-In
+    !$ser data local_omga=Atm(n)%local_omga delp=Atm(n)%delp delz=Atm(n)%delz
+    !$ser data w=Atm(n)%w da=Atm(n)%gridstruct%da_min rarea=Atm(n)%gridstruct%rarea
     if (.not. Atm(n)%flagstruct%hydrostatic .and. .not. Atm(n)%flagstruct%pass_full_omega_to_physics_in_non_hydrostatic_mode) then
         Atm(n)%local_omga(isc:iec,jsc:jec,1:npz) = Atm(n)%delp(isc:iec,jsc:jec,1:npz) / Atm(n)%delz(isc:iec,jsc:jec,1:npz) * Atm(n)%w(isc:iec,jsc:jec,1:npz)
         if(Atm(n)%flagstruct%nf_omega>0)   then
@@ -563,6 +565,8 @@ contains
                 Atm(n)%bd)
         endif
     endif
+    !$ser savepoint CalcLocalOmga-Out
+    !$ser data local_omga=Atm(n)%local_omga
 
    call mpp_clock_end (id_dynam)
    call mpp_clock_begin (id_subgrid)
