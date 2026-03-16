@@ -183,6 +183,7 @@ contains
    call timing_on('ATMOS_TOTAL')
    call timing_on('ATMOS_INIT')
 
+   !$ser on
    !For regional
    a_step = 0
    current_time_in_seconds = time_type_to_real( Time - Time_init )
@@ -383,6 +384,7 @@ contains
       call data_override_init(Atm_domain_in = Atm(mygrid)%domain)
    endif
 
+   !$ser off
    call timing_off('ATMOS_INIT')
 
  end subroutine atmosphere_init

@@ -350,6 +350,12 @@ contains
              endif
              if (grid_type < 4) then
                 if ( .not. Atm(n)%flagstruct%external_ic ) then
+                  !$ser savepoint ICGen-In
+                  !$ser data u=Atm(n)%u v=Atm(n)%v w=Atm(n)%w t=Atm(n)%pt delp=Atm(n)%delp
+                  !$ser data qvap=Atm(n)%q(:,:,:,1) qliq=Atm(n)%q(:,:,:,2) qrain=Atm(n)%q(:,:,:,3)
+                  !$ser data qice=Atm(n)%q(:,:,:,4) qsnow=Atm(n)%q(:,:,:,5) qgraupel=Atm(n)%q(:,:,:,6)
+                  !$ser data uc=Atm(n)%uc vc=Atm(n)%vc ua=Atm(n)%ua vaAtm(n)%va delz=Atm(n)%delz
+                  !$ser data ncnst=ncnst nwat=Atm(n)%flagstruct%nwat ptop=Atm(n)%ptop
                    call init_case(Atm(n)%u,Atm(n)%v,Atm(n)%w,Atm(n)%pt,Atm(n)%delp,Atm(n)%q, &
                         Atm(n)%phis, Atm(n)%ps,Atm(n)%pe, Atm(n)%peln,Atm(n)%pk,Atm(n)%pkz, &
                         Atm(n)%uc,Atm(n)%vc, Atm(n)%ua,Atm(n)%va,        &
@@ -363,6 +369,11 @@ contains
                         hybrid, Atm(n)%delz, Atm(n)%ze0, &
                         Atm(n)%flagstruct%adiabatic, Atm(n)%ks, Atm(n)%neststruct%npx_global, &
                         Atm(n)%ptop, Atm(n)%domain, Atm(n)%tile_of_mosaic, Atm(n)%bd)
+                  !$ser savepoint ICGen-Out
+                  !$ser data u=Atm(n)%u v=Atm(n)%v w=Atm(n)%w t=Atm(n)%pt delp=Atm(n)%delp
+                  !$ser data qvap=Atm(n)%q(:,:,:,1) qliq=Atm(n)%q(:,:,:,2) qrain=Atm(n)%q(:,:,:,3)
+                  !$ser data qice=Atm(n)%q(:,:,:,4) qsnow=Atm(n)%q(:,:,:,5) qgraupel=Atm(n)%q(:,:,:,6)
+                  !$ser data uc=Atm(n)%uc vc=Atm(n)%vc ua=Atm(n)%ua vaAtm(n)%va delz=Atm(n)%delz
                 endif
              elseif (grid_type == 4) then
                 call init_double_periodic(Atm(n)%u,Atm(n)%v,Atm(n)%w,Atm(n)%pt, &
