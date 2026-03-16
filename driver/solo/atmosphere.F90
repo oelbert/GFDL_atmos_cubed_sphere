@@ -123,6 +123,7 @@ contains
     Time_step_atmos = Time_step
     call get_time (Time_step_atmos, sec)
     dt_atmos = real(sec)
+    !$ser on
 
   !----- initialize FV dynamical core -----
     cold_start = (.not.file_exists('INPUT/fv_core.res.nc') .and. .not.file_exists('INPUT/fv_core.res.tile1.nc'))
@@ -183,7 +184,7 @@ contains
                 Atm(mygrid)%npz,  Atm(mygrid)%flagstruct%hydrostatic, Atm(mygrid)%flagstruct%moist_phys)
         endif
 
-
+   !$ser off
    call timing_off('ATMOS_INIT')
 
   end subroutine atmosphere_init
