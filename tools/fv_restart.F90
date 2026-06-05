@@ -30,7 +30,11 @@ module fv_restart_mod
   ! for the model.
   !</DESCRIPTION>
 
+#ifdef OVERLOAD_R4
+  use constantsR4_mod,     only: kappa, pi=>pi_8, rdgas, grav, rvgas, cp_air
+#else
   use constants_mod,       only: kappa, pi=>pi_8, rdgas, grav, rvgas, cp_air
+#endif
   use fv_arrays_mod,       only: radius, omega ! scaled for small earth
   use fv_arrays_mod,       only: fv_atmos_type, fv_nest_type, fv_grid_bounds_type, R_GRID
   use fv_io_mod,           only: fv_io_init, fv_io_read_restart, fv_io_write_restart, &
@@ -248,10 +252,6 @@ contains
 
        !This call still appears to be necessary to get isd, etc. correct
        !call switch_current_Atm(Atm(n)) !TODO should NOT be necessary now that we manually set isd, etc.
-
-       !--- call fv_io_register_restart to register restart field to be written out in fv_io_write_restart
-       !if (n==this_grid) call fv_io_register_restart(Atm(n)%domain,Atm(n:n))
-       !if (Atm(n)%neststruct%nested) call fv_io_register_restart_BCs(Atm(n)) !TODO put into fv_io_register_restart
 
        if (n==this_grid) then
 
@@ -711,7 +711,7 @@ contains
            Atm(n)%gridstruct, &
            Atm(n)%npx, Atm(n)%npy, npz, 1, &
            Atm(n)%gridstruct%grid_type, Atm(n)%domain, &
-           Atm(n)%gridstruct%bounded_domain, Atm(n)%flagstruct%c2l_ord, Atm(n)%bd)
+           Atm(n)%gridstruct%bounded_domain, 4, Atm(n)%bd)
       call prt_maxmin('UA ', Atm(n)%ua, isc, iec, jsc, jec, Atm(n)%ng, npz, 1.)
       call prt_maxmin('VA ', Atm(n)%va, isc, iec, jsc, jec, Atm(n)%ng, npz, 1.)
 
@@ -748,7 +748,7 @@ contains
               Atm(n)%gridstruct, &
               Atm(n)%npx, Atm(n)%npy, npz, 1, &
               Atm(n)%gridstruct%grid_type, Atm(n)%domain, &
-              Atm(n)%gridstruct%bounded_domain, Atm(n)%flagstruct%c2l_ord, Atm(n)%bd)
+              Atm(n)%gridstruct%bounded_domain, 4, Atm(n)%bd)
          do j=jsc,jec
             do i=isc,iec
                Atm(n)%u_srf(i,j) = Atm(n)%ua(i,j,npz)

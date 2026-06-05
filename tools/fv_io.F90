@@ -61,12 +61,14 @@ module fv_io_mod
   use fv_treat_da_inc_mod,     only: read_da_inc
   use mpp_parameter_mod,       only: DGRID_NE
   use fv_grid_utils_mod,       only: cubed_a2d
+  use fv_operators_mod,        only: remap_2d
+  use constants_mod,           only: rvgas, rdgas, grav
   
   implicit none
   private
 
   public :: fv_io_init, fv_io_exit, fv_io_read_restart, remap_restart, fv_io_write_restart
-  public :: fv_io_read_tracers, fv_io_register_restart, fv_io_register_nudge_restart
+  public :: fv_io_read_tracers, fv_io_register_nudge_restart
   public :: fv_io_register_restart_BCs
   public :: fv_io_write_BCs, fv_io_read_BCs
   public :: fv_io_register_axis
@@ -281,13 +283,13 @@ contains
        zsize = (/size(Atm%u,3)/)
        call fv_io_register_axis(Atm%Fv_restart_tile, numx=numx_2d, numy=numy_2d, xpos=xpos_2d, ypos=ypos_2d, numz=numz, zsize=zsize)
 
-       !--- optionally include D-grid winds even if restarting from A-grid winds
        if (Atm%flagstruct%is_ideal_case) then
           call register_restart_field(Atm%Fv_restart_tile, 'u0', Atm%u0, &
                dim_names_4d, is_optional=.true.)
           call register_restart_field(Atm%Fv_restart_tile, 'v0', Atm%v0, &
                dim_names_4d2, is_optional=.true.)
        endif
+       !--- optionally include D-grid winds even if restarting from A-grid winds
        if (Atm%flagstruct%write_optional_dgrid_vel_rst .and. Atm%flagstruct%restart_from_agrid_winds) then
           call register_restart_field(Atm%Fv_restart_tile, 'u', Atm%u, &
                dim_names_4d, is_optional=.true.)
@@ -620,7 +622,6 @@ contains
 
 
   subroutine  remap_restart(Atm)
-  use fv_mapz_mod,       only: rst_remap
 
     type(fv_atmos_type), intent(inout) :: Atm(:)
 
@@ -634,6 +635,13 @@ contains
     type(FmsNetcdfDomainFile_t) :: FV_tile_restart_r, Tra_restart_r
     type(FmsNetcdfFile_t)       :: Fv_restart_r
     integer, allocatable, dimension(:) :: pes !< Array of the pes in the current pelist
+    character(len=8), dimension(2)  :: dim_names_2d_ak !< Dimension names used to register restart fields
+    character(len=8), dimension(3)  :: dim_names_3d_phis !< Dimension names used to register restart fields
+    character(len=8), dimension(4)  :: dim_names_4d_u, dim_names_4d_v, dim_names_4d_w, dim_names_4d_ze0 !< Dimension
+                                       !! names used to register restart fields
+    integer, dimension(1) :: xpos, ypos !< x/y position for registering axis
+    integer, dimension(2) :: xpos_2d, ypos_2d !< 2-dim x/y position for registering axis
+    integer, dimension(2) :: zsize_2d !< 2-dim z axis size for registering axis
 
 !
 !-------------------------------------------------------------------------
@@ -684,12 +692,39 @@ contains
            allocate ( ze0_r(isc:iec, jsc:jec,  npz_rst+1) )
     endif
 
+    dim_names_2d_ak(1) = "xaxis_1"
+    dim_names_2d_ak(2) = "Time"
+    dim_names_3d_phis(1) = "xaxis_1"
+    dim_names_3d_phis(2) = "yaxis_2"
+    dim_names_3d_phis(3) = "Time"
+    dim_names_4d_u(1) = "xaxis_1"
+    dim_names_4d_u(2) = "yaxis_1"
+    dim_names_4d_u(3) = "zaxis_1"
+    dim_names_4d_u(4) = "Time"
+    dim_names_4d_v = dim_names_4d_u
+    dim_names_4d_v(1) = "xaxis_2"
+    dim_names_4d_v(2) = "yaxis_2"
+    dim_names_4d_w = dim_names_4d_u
+    dim_names_4d_w(2) = "yaxis_2"
+    dim_names_4d_ze0 = dim_names_4d_u
+    dim_names_4d_ze0(2) = "yaxis_2"
+    dim_names_4d_ze0(3) = "zaxis_2"
+    xpos = (/CENTER/)
+    ypos = (/CENTER/)
+    xpos_2d = (/CENTER, EAST/)
+    ypos_2d = (/NORTH, CENTER/)
+    zsize_2d(1) = npz_rst
+    zsize_2d(2) = npz_rst+1
+
     fname = 'INPUT/fv_core.res.nc'
     allocate(pes(mpp_npes()))
     call mpp_get_current_pelist(pes)
     if (open_file(Fv_restart_r,fname,"read", is_restart=.true., pelist=pes)) then
-       call read_data(Fv_restart_r, 'ak', ak_r(:))
-       call read_data(Fv_restart_r, 'bk', bk_r(:))
+       call register_axis(Fv_restart_r, "xaxis_1", size(ak_r(:), 1))
+       call register_axis(Fv_restart_r, "Time", unlimited)
+       call register_restart_field (Fv_restart_r, 'ak', ak_r(:), dim_names_2d_ak)
+       call register_restart_field (Fv_restart_r, 'bk', bk_r(:), dim_names_2d_ak)
+       call read_restart(Fv_restart_r)
        call close_file(Fv_restart_r)
     endif
     deallocate(pes)
@@ -702,28 +737,27 @@ contains
        stile_name = ''
     endif
 
-!!!! A NOTE about file names
-!!! file_exist() needs the full relative path, including INPUT/
-!!! But register_restart_field ONLY looks in INPUT/ and so JUST needs the file name!!
-
        fname = 'INPUT/fv_core.res'//trim(stile_name)//'.nc'
        if (open_file(Fv_tile_restart_r, fname, "read", fv_domain, is_restart=.true.)) then
+          call fv_io_register_axis(Fv_tile_restart_r, numx=2, numy=2, xpos=xpos_2d, ypos=ypos_2d, numz=2, &
+               zsize=zsize_2d)
           if (Atm(1)%flagstruct%is_ideal_case) then
-             call read_data(Fv_tile_restart_r, 'u0', u0_r)
-             call read_data(Fv_tile_restart_r, 'v0', v0_r)
+             call register_restart_field (Fv_tile_restart_r, 'u0', u0_r, dim_names_4d_u, is_optional=.true.)
+             call register_restart_field (Fv_tile_restart_r, 'v0', v0_r, dim_names_4d_v, is_optional=.true.)
           endif
-          call read_data(Fv_tile_restart_r, 'u', u_r)
-          call read_data(Fv_tile_restart_r, 'v', v_r)
+          call register_restart_field (Fv_tile_restart_r, 'u', u_r, dim_names_4d_u)
+          call register_restart_field (Fv_tile_restart_r, 'v', v_r, dim_names_4d_v)
           if (.not.Atm(1)%flagstruct%hydrostatic) then
-             call read_data(Fv_tile_restart_r, 'W', w_r)
-             call read_data(Fv_tile_restart_r, 'DZ', delz_r)
+             call register_restart_field (Fv_tile_restart_r, 'W', w_r, dim_names_4d_w, is_optional=.true.)
+             call register_restart_field (Fv_tile_restart_r, 'DZ', delz_r, dim_names_4d_w, is_optional=.true.)
              if ( Atm(1)%flagstruct%hybrid_z ) then
-                call read_data(Fv_tile_restart_r, 'ZE0', ze0_r)
+                call register_restart_field (Fv_tile_restart_r, 'ZE0', ze0_r, dim_names_4d_ze0, is_optional=.true.)
              endif
           endif
-          call read_data(Fv_tile_restart_r, 'T', pt_r)
-          call read_data(Fv_tile_restart_r, 'delp', delp_r)
-          call read_data(Fv_tile_restart_r, 'phis', Atm(1)%phis)
+          call register_restart_field (Fv_tile_restart_r, 'T', pt_r, dim_names_4d_w)
+          call register_restart_field (Fv_tile_restart_r, 'delp', delp_r, dim_names_4d_w)
+          call register_restart_field (Fv_tile_restart_r, 'phis', Atm(1)%phis, dim_names_3d_phis)
+          call read_restart(Fv_tile_restart_r, ignore_checksum=Atm(1)%flagstruct%ignore_rst_cksum)
           call close_file(FV_tile_restart_r)
        endif
 
@@ -745,7 +779,8 @@ contains
          fname = 'INPUT/mg_drag.res'//trim(stile_name)//'.nc'
          Atm(1)%Mg_restart_is_open = open_file(Atm(1)%Mg_restart, fname, "read", fv_domain, is_restart=.true.)
          if (Atm(1)%Mg_restart_is_open) then
-            call read_data(Atm(1)%Mg_restart, 'ghprime', Atm(1)%sgh)
+            call fv_io_register_restart(Atm(1))
+            call read_restart(Atm(1)%Mg_restart, ignore_checksum=Atm(1)%flagstruct%ignore_rst_cksum)
             call close_file(Atm(1)%Mg_restart)
             Atm(1)%Mg_restart_is_open = .false.
          else
@@ -755,7 +790,8 @@ contains
          fname = 'INPUT/fv_land.res'//trim(stile_name)//'.nc'
          Atm(1)%Lnd_restart_is_open = open_file(Atm(1)%Lnd_restart, fname, "read", fv_domain, is_restart=.true.)
          if (Atm(1)%Lnd_restart_is_open) then
-           call read_data(Atm(1)%Lnd_restart, 'oro', Atm(1)%oro)
+           call fv_io_register_restart(Atm(1))
+           call read_restart(Atm(1)%Lnd_restart, ignore_checksum=Atm(1)%flagstruct%ignore_rst_cksum)
            call close_file(Atm(1)%Lnd_restart)
            Atm(1)%Lnd_restart_is_open = .false.
          else
@@ -765,20 +801,18 @@ contains
 
        fname = 'INPUT/fv_tracer.res'//trim(stile_name)//'.nc'
        if (open_file(Tra_restart_r, fname, "read", fv_domain, is_restart=.true.)) then
+         call fv_io_register_axis(Tra_restart_r, numx=1, numy=1, xpos=xpos, ypos=ypos, numz=1, zsize=(/npz_rst/))
          do nt = 1, ntprog
             call get_tracer_names(MODEL_ATMOS, nt, tracer_name)
-            call set_tracer_profile (MODEL_ATMOS, nt, q_r(isc:iec,jsc:jec,:,nt)  )
-            if (variable_exists(Tra_restart_r, tracer_name)) then
-               call read_data(Tra_restart_r, tracer_name, q_r(:,:,:,nt))
-            endif
+           call register_restart_field(Tra_restart_r, tracer_name, q_r(:,:,:,nt), &
+                dim_names_4d_u, is_optional=.true.)
          enddo
          do nt = ntprog+1, ntracers
             call get_tracer_names(MODEL_ATMOS, nt, tracer_name)
-            call set_tracer_profile (MODEL_ATMOS, nt, qdiag_r(isc:iec,jsc:jec,:,nt)  )
-            if (variable_exists(Tra_restart_r, tracer_name)) then
-               call read_data (Tra_restart_r, tracer_name, qdiag_r(:,:,:,nt))
-            endif
+            call register_restart_field(Tra_restart_r, tracer_name, qdiag_r(:,:,:,nt), &
+                 dim_names_4d_u, is_optional=.true.)
          enddo
+         call read_restart(Tra_restart_r, ignore_checksum=Atm(1)%flagstruct%ignore_rst_cksum)
          call close_file(Tra_restart_r)
        else
          call mpp_error(NOTE,'==> Warning from remap_restart: Expected file '//trim(fname)//' does not exist')
@@ -822,6 +856,300 @@ contains
     endif
 
   end subroutine  remap_restart
+
+ subroutine rst_remap(km, kn, is,ie,js,je, isd,ied,jsd,jed, nq, ntp, &
+                      delp_r, u0_r, v0_r, u_r, v_r, w_r, delz_r, pt_r, q_r, qdiag_r, &
+                      delp,   u0,   v0,   u,   v,   w,   delz,   pt,   q,   qdiag,   &
+                      ak_r, bk_r, ptop, ak, bk, hydrostatic, make_nh, &
+                      domain, square_domain, is_ideal_case)
+!------------------------------------
+! Assuming hybrid sigma-P coordinate:
+!------------------------------------
+! !INPUT PARAMETERS:
+  integer, intent(in):: km                    ! Restart z-dimension
+  integer, intent(in):: kn                    ! Run time dimension
+  integer, intent(in):: nq, ntp               ! number of tracers (including h2o)
+  integer, intent(in):: is,ie,isd,ied         ! starting & ending X-Dir index
+  integer, intent(in):: js,je,jsd,jed         ! starting & ending Y-Dir index
+  logical, intent(in):: hydrostatic, make_nh, square_domain, is_ideal_case
+  real, intent(IN) :: ptop
+  real, intent(in) :: ak_r(km+1)
+  real, intent(in) :: bk_r(km+1)
+  real, intent(in) :: ak(kn+1)
+  real, intent(in) :: bk(kn+1)
+  real, intent(in):: delp_r(is:ie,js:je,km) ! pressure thickness
+  real, intent(in)::   u0_r(is:ie,  js:je+1,km)   ! initial (t=0) u-wind (m/s)
+  real, intent(in)::   v0_r(is:ie+1,js:je  ,km)   ! initial (t=0) v-wind (m/s)
+  real, intent(in)::   u_r(is:ie,  js:je+1,km)   ! u-wind (m/s)
+  real, intent(in)::   v_r(is:ie+1,js:je  ,km)   ! v-wind (m/s)
+  real, intent(inout)::  pt_r(is:ie,js:je,km)
+  real, intent(in)::   w_r(is:ie,js:je,km)
+  real, intent(in)::   q_r(is:ie,js:je,km,1:ntp)
+  real, intent(in)::   qdiag_r(is:ie,js:je,km,ntp+1:nq)
+  real, intent(inout)::delz_r(is:ie,js:je,km)
+  type(domain2d), intent(INOUT) :: domain
+! Output:
+  real, intent(out):: delp(isd:ied,jsd:jed,kn) ! pressure thickness
+  real, intent(out):: u0(isd:,jsd:,1:)   ! initial (t=0) u-wind (m/s)
+  real, intent(out):: v0(isd:,jsd:,1:)   ! initial (t=0) v-wind (m/s)
+  real, intent(out)::  u(isd:ied  ,jsd:jed+1,kn)   ! u-wind (m/s)
+  real, intent(out)::  v(isd:ied+1,jsd:jed  ,kn)   ! v-wind (m/s)
+  real, intent(out)::  w(isd:     ,jsd:     ,1:)   ! vertical velocity (m/s)
+  real, intent(out):: pt(isd:ied  ,jsd:jed  ,kn)   ! temperature
+  real, intent(out):: q(isd:ied,jsd:jed,kn,1:ntp)
+  real, intent(out):: qdiag(isd:ied,jsd:jed,kn,ntp+1:nq)
+  real, intent(out):: delz(is:,js:,1:)   ! delta-height (m)
+!-----------------------------------------------------------------------
+  real r_vir, rgrav
+  real ps(isd:ied,jsd:jed)  ! surface pressure
+  real  pe1(is:ie,km+1)
+  real  pe2(is:ie,kn+1)
+  real  pv1(is:ie+1,km+1)
+  real  pv2(is:ie+1,kn+1)
+
+  integer i,j,k , iq
+  !CS operator replaces original mono PPM 4 --- lmh 19apr23
+  integer, parameter:: kord=4 ! 13
+
+#ifdef HYDRO_DELZ_REMAP
+  if (is_master() .and. .not. hydrostatic) then
+     print*, ''
+     print*, ' REMAPPING IC: INITIALIZING DELZ WITH HYDROSTATIC STATE  '
+     print*, ''
+  endif
+#endif
+
+#ifdef HYDRO_DELZ_EXTRAP
+  if (is_master() .and. .not. hydrostatic) then
+     print*, ''
+     print*, ' REMAPPING IC: INITIALIZING DELZ WITH HYDROSTATIC STATE ABOVE INPUT MODEL TOP  '
+     print*, ''
+  endif
+#endif
+
+#ifdef ZERO_W_EXTRAP
+  if (is_master() .and. .not. hydrostatic) then
+     print*, ''
+     print*, ' REMAPPING IC: INITIALIZING W TO ZERO ABOVE INPUT MODEL TOP  '
+     print*, ''
+  endif
+#endif
+
+  r_vir = rvgas/rdgas - 1.
+  rgrav = 1./grav
+
+!$OMP parallel do default(none) shared(is,ie,js,je,ps,ak_r)
+  do j=js,je
+     do i=is,ie
+        ps(i,j) = ak_r(1)
+     enddo
+  enddo
+
+! this OpenMP do-loop setup cannot work in it's current form....
+!$OMP parallel do default(none) shared(is,ie,js,je,km,ps,delp_r)
+  do j=js,je
+     do k=1,km
+        do i=is,ie
+           ps(i,j) = ps(i,j) + delp_r(i,j,k)
+        enddo
+     enddo
+  enddo
+
+! only one cell is needed
+  if ( square_domain ) then
+      call mpp_update_domains(ps, domain,  whalo=1, ehalo=1, shalo=1, nhalo=1, complete=.true.)
+  else
+      call mpp_update_domains(ps, domain, complete=.true.)
+  endif
+
+! Compute virtual Temp
+!$OMP parallel do default(none) shared(is,ie,js,je,km,pt_r,r_vir,q_r)
+  do k=1,km
+     do j=js,je
+        do i=is,ie
+           pt_r(i,j,k) = pt_r(i,j,k) * (1.+r_vir*q_r(i,j,k,1))
+        enddo
+     enddo
+  enddo
+
+!$OMP parallel do default(none) shared(is,ie,js,je,km,ak_r,bk_r,ps,kn,ak,bk,u0_r,u_r,u0,u,delp, &
+!$OMP                                  ntp,nq,hydrostatic,make_nh,w_r,w,delz_r,delp_r,delz, &
+!$OMP                                  pt_r,pt,v0_r,v_r,v0,v,q,q_r,qdiag,qdiag_r,is_ideal_case) &
+!$OMP                          private(pe1,  pe2, pv1, pv2)
+  do 1000 j=js,je+1
+!------
+! map u
+!------
+     do k=1,km+1
+        do i=is,ie
+           pe1(i,k) = ak_r(k) + 0.5*bk_r(k)*(ps(i,j-1)+ps(i,j))
+        enddo
+     enddo
+
+     do k=1,kn+1
+        do i=is,ie
+           pe2(i,k) = ak(k) + 0.5*bk(k)*(ps(i,j-1)+ps(i,j))
+        enddo
+     enddo
+
+     if (is_ideal_case) then
+        call remap_2d(km, pe1, u0_r(is:ie,j:j,1:km),      &
+                      kn, pe2,   u0(is:ie,j:j,1:kn),      &
+                      is, ie, -1, kord)
+     endif
+
+     call remap_2d(km, pe1, u_r(is:ie,j:j,1:km),       &
+                   kn, pe2,   u(is:ie,j:j,1:kn),       &
+                   is, ie, -1, kord)
+
+  if ( j /= (je+1) )  then
+
+!---------------
+! Hybrid sigma-p
+!---------------
+     do k=1,km+1
+        do i=is,ie
+           pe1(i,k) = ak_r(k) + bk_r(k)*ps(i,j)
+        enddo
+     enddo
+
+     do k=1,kn+1
+        do i=is,ie
+           pe2(i,k) =   ak(k) + bk(k)*ps(i,j)
+        enddo
+     enddo
+
+!-------------
+! Compute delp
+!-------------
+      do k=1,kn
+         do i=is,ie
+            delp(i,j,k) = pe2(i,k+1) - pe2(i,k)
+         enddo
+      enddo
+
+!----------------
+! Map constituents
+!----------------
+      if( nq /= 0 ) then
+          do iq=1,ntp
+             call remap_2d(km, pe1, q_r(is:ie,j:j,1:km,iq:iq),  &
+                           kn, pe2,   q(is:ie,j:j,1:kn,iq:iq),  &
+                           is, ie, 0, kord)
+          enddo
+          do iq=ntp+1,nq
+             call remap_2d(km, pe1, qdiag_r(is:ie,j:j,1:km,iq:iq),  &
+                           kn, pe2,   qdiag(is:ie,j:j,1:kn,iq:iq),  &
+                           is, ie, 0, kord)
+          enddo
+      endif
+
+      if ( .not. hydrostatic .and. .not. make_nh) then
+! Remap vertical wind:
+         call remap_2d(km, pe1, w_r(is:ie,j:j,1:km),       &
+                       kn, pe2,   w(is:ie,j:j,1:kn),       &
+                       is, ie, -1, kord)
+
+#ifdef ZERO_W_EXTRAP
+       do k=1,kn
+       do i=is,ie
+          if (pe2(i,k) < pe1(i,1)) then
+             w(i,j,k) = 0.
+          endif
+       enddo
+       enddo
+#endif
+
+#ifndef HYDRO_DELZ_REMAP
+! Remap delz for hybrid sigma-p coordinate
+         do k=1,km
+            do i=is,ie
+               delz_r(i,j,k) = -delz_r(i,j,k)/delp_r(i,j,k) ! ="specific volume"/grav
+            enddo
+         enddo
+         call remap_2d(km, pe1, delz_r(is:ie,j:j,1:km),       &
+                       kn, pe2,   delz(is:ie,j:j,1:kn),       &
+                       is, ie, 1, kord)
+         do k=1,kn
+            do i=is,ie
+               delz(i,j,k) = -delz(i,j,k)*delp(i,j,k)
+            enddo
+         enddo
+#endif
+      endif
+
+! Geopotential conserving remap of virtual temperature:
+       do k=1,km+1
+          do i=is,ie
+             pe1(i,k) = log(pe1(i,k))
+          enddo
+       enddo
+       do k=1,kn+1
+          do i=is,ie
+             pe2(i,k) = log(pe2(i,k))
+          enddo
+       enddo
+
+       call remap_2d(km, pe1, pt_r(is:ie,j:j,1:km),       &
+                     kn, pe2,   pt(is:ie,j:j,1:kn),       &
+                     is, ie, 1, kord)
+
+#ifdef HYDRO_DELZ_REMAP
+       !initialize delz from the hydrostatic state
+       do k=1,kn
+       do i=is,ie
+          delz(i,j,k) = (rdgas*rgrav)*pt(i,j,k)*(pe2(i,k)-pe2(i,k+1))
+       enddo
+       enddo
+#endif
+#ifdef HYDRO_DELZ_EXTRAP
+       !initialize delz from the hydrostatic state
+       do k=1,kn
+       do i=is,ie
+          if (pe2(i,k) < pe1(i,1)) then
+             delz(i,j,k) = (rdgas*rgrav)*pt(i,j,k)*(pe2(i,k)-pe2(i,k+1))
+          endif
+       enddo
+       enddo
+#endif
+!------
+! map v
+!------
+       do k=1,km+1
+          do i=is,ie+1
+             pv1(i,k) = ak_r(k) + 0.5*bk_r(k)*(ps(i-1,j)+ps(i,j))
+          enddo
+       enddo
+       do k=1,kn+1
+          do i=is,ie+1
+             pv2(i,k) = ak(k) + 0.5*bk(k)*(ps(i-1,j)+ps(i,j))
+          enddo
+       enddo
+
+       if (is_ideal_case) then
+          call remap_2d(km, pv1, v0_r(is:ie+1,j:j,1:km),      &
+                        kn, pv2,   v0(is:ie+1,j:j,1:kn),      &
+                        is, ie+1, -1, kord)
+       endif
+
+       call remap_2d(km, pv1, v_r(is:ie+1,j:j,1:km),       &
+                     kn, pv2,   v(is:ie+1,j:j,1:kn),       &
+                     is, ie+1, -1, kord)
+
+  endif !(j < je+1)
+1000  continue
+
+!$OMP parallel do default(none) shared(is,ie,js,je,kn,pt,r_vir,q)
+  do k=1,kn
+     do j=js,je
+        do i=is,ie
+           pt(i,j,k) = pt(i,j,k) / (1.+r_vir*q(i,j,k,1))
+        enddo
+     enddo
+  enddo
+
+ end subroutine rst_remap
+
 
 
   !#####################################################################
@@ -1415,14 +1743,14 @@ contains
                            fname_ne, fname_sw, 'delz', var_bc=Atm%neststruct%delz_BC, mandatory=.false.)
 !                           fname_ne, fname_sw, 'delz', Atm%delz, Atm%neststruct%delz_BC, mandatory=.false.)
     endif
-#ifdef USE_COND
+    if (Atm%thermostruct%use_cond) then
        call register_bcs_3d(Atm, Atm%neststruct%BCfile_ne, Atm%neststruct%BCfile_sw, &
                             fname_ne, fname_sw,'q_con', var_bc=Atm%neststruct%q_con_BC, mandatory=.false.)
-#ifdef MOIST_CAPPA
+    endif
+    if (Atm%thermostruct%moist_kappa) then
        call register_bcs_3d(Atm, Atm%neststruct%BCfile_ne, Atm%neststruct%BCfile_sw, &
             fname_ne, fname_sw, 'cappa', var_bc=Atm%neststruct%cappa_BC, mandatory=.false.)
-#endif
-#endif
+    endif
 #endif
     if (Atm%flagstruct%is_ideal_case) then
        call register_bcs_3d(Atm, Atm%neststruct%BCfile_ne, Atm%neststruct%BCfile_sw, &

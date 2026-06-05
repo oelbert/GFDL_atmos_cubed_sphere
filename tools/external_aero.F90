@@ -31,7 +31,7 @@ module external_aero_mod
         use fms2_io_mod, only: file_exists
 	use mpp_mod, only: mpp_pe, mpp_root_pe, mpp_npes, mpp_get_current_pelist
 	use time_manager_mod, only: time_type
-	use fv_mapz_mod, only: map1_q2
+	use fv_operators_mod, only: map1_q2
 	use fv_fill_mod, only: fillz
 
 	public :: load_aero, read_aero, clean_aero
@@ -171,7 +171,12 @@ end subroutine load_aero
 
 subroutine read_aero(is, ie, js, je, npz, nq, Time, pe, peln, qa, kord_tr, fill)
 
-	use constants_mod, only: grav
+#ifdef OVERLOAD_R4
+	use constantsR4_mod, only: grav
+#else
+  use constants_mod, only: grav
+#endif
+
 	use diag_manager_mod, only: send_data
 	use time_manager_mod, only: get_date, set_date, get_time, operator(-)
 	use tracer_manager_mod, only: get_tracer_index
